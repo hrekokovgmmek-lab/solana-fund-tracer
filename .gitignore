@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.fundtrace/
+labels.json
+ledger_*.jsonl
+.DS_Store

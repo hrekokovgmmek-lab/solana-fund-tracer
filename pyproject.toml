@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solana-fund-tracer"
+version = "1.0.0"
+description = "Follow money on Solana: back to its source, forward to the exchange, and exchange deposit addresses. Read-only."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Artem Vartanov"}]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+fundtrace = "fundtrace.__main__:main"
+
+[tool.setuptools]
+packages = ["fundtrace"]
