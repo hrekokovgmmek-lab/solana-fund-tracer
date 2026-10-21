@@ -5,7 +5,7 @@
 Follow money on Solana: back to where it came from, forward to the exchange where it left, and tell exchange
 deposit addresses apart. Read-only, standard library only, runs on the free public RPC.
 
-<p align="center"><img src="docs/demo.svg" alt="Offline demo on a synthetic chain: funding traced back to an exchange, proceeds traced forward to a deposit address and swept into the exchange, a memo-hidden transfer flagged" width="900"></p>
+<p align="center"><img src="docs/demo.svg" alt="Offline demo on a synthetic chain: funding traced back to an exchange, proceeds traced forward to a deposit address and swept into the exchange, a memo-hidden transfer flagged, and the profit of four sellers converging on one hub" width="900"></p>
 
 ## Commands
 
@@ -15,6 +15,7 @@ deposit addresses apart. Read-only, standard library only, runs on the free publ
 | `forward ADDR` | Where did it go? Follows the largest outgoing transfer (trades are not transfers) |
 | `deposit ADDR …` | Is this an exchange deposit address? Looks for sweeps into a labelled exchange hot wallet |
 | `funding ADDR --before SIG` | Who paid this wallet just before a given transaction (a large buy, a payment)? Flags memos |
+| `sinks ADDR ADDR …` | Where does the money of a group converge? Addresses that received money from several of the wallets |
 | `ledger ADDR` | The full history of an address as a JSONL ledger, oldest first. Resumable |
 | `summary LEDGER` | Counterparties of a ledger: who sent how much, who received how much, which are exchanges |
 | `stables ADDR` | USDC and USDT counterparties of an address, from its ledger |
@@ -28,6 +29,7 @@ python3 -m fundtrace labels          # once: exchange labels
 python3 -m fundtrace back <wallet>
 python3 -m fundtrace forward <wallet>
 python3 -m fundtrace deposit <address> [<address> …]
+python3 -m fundtrace sinks <wallet> <wallet> … --depth 2
 ```
 
 Every command prints text; add `--json` before the command for machine-readable output.
@@ -44,6 +46,12 @@ Every command prints text; add `--json` before the command for machine-readable 
 - **Deposit addresses by behaviour, not by name.** An exchange gives every customer a deposit address and sweeps it
   into a hot wallet. An address that sends SOL or tokens straight into a labelled exchange wallet is a deposit
   address. That is the point where on-chain tracing ends: who owns the account is known only to the exchange.
+- **Where the money converges.** Funding is easy to disguise: a fresh wallet funded by an exchange withdrawal links
+  to nothing. Where the profit goes afterwards is harder to hide, because the operator wants it back. `sinks` takes
+  the wallets of a suspected group (say, everyone who sold a token in its first minutes) and lists the addresses that
+  received money from at least two of them. `--depth 2` also follows one-off wallets in between: what a fresh
+  intermediary forwards is credited to the wallet that paid it. Trades, transfers inside the group and token-account
+  rent are not counted.
 - **Hidden payers.** `funding` flags transfers that carry a memo or are signed together with a one-off co-signer.
   Both are common ways to make "who paid whom" harder to read.
 - **Read the whole history, not the explorer page.** `ledger` pages through every signature, keeps one line per
@@ -101,8 +109,9 @@ strength of a heuristic.
 python3 -m unittest discover -s tests
 ```
 
-22 tests on a synthetic chain served by a fake RPC node: the walks, loops and busy addresses, deposit sweeps, memo
-flags, the resumable ledger, stablecoin flows, the cache, retries on rate limits and the shared rate limit.
+29 tests on a synthetic chain served by a fake RPC node: the walks, loops and busy addresses, deposit sweeps, memo
+flags, convergence of a group's money (direct, through one-off wallets, with a time cut, wrapped SOL credited to the
+owner), the resumable ledger, stablecoin flows, the cache, retries on rate limits and the shared rate limit.
 
 ## License
 

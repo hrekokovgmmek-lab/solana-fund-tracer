@@ -66,6 +66,25 @@ def chain():
             ix=("Transfer",), progs=(TOKEN,)),
         _tx("sig11_usdc_from_hub1", 190, ["HUB_1"], tokens=[("HUB_1", USDC, 300, 0), ("COLLECTOR", USDC, 0, 300)],
             ix=("Transfer",), progs=(TOKEN,)),
+        # The return path: four sellers funded straight from the exchange (funding links nothing), then the profit
+        # converges. A and D pay HUB_2 directly, B goes through a one-off wallet, C keeps its money.
+        _tx("sig12_withdraw_a", 200, ["EXCHANGE_HOT"], {"EXCHANGE_HOT": -30, "SELLER_A": 30}),
+        _tx("sig13_withdraw_b", 201, ["EXCHANGE_HOT"], {"EXCHANGE_HOT": -25, "SELLER_B": 25}),
+        _tx("sig14_withdraw_c", 202, ["EXCHANGE_HOT"], {"EXCHANGE_HOT": -10, "SELLER_C": 10}),
+        _tx("sig15_withdraw_d", 203, ["EXCHANGE_HOT"], {"EXCHANGE_HOT": -20, "SELLER_D": 20}),
+        _tx("sig16_sell_a", 210, ["SELLER_A"], {"SELLER_A": 40, "POOL": -40}, [("SELLER_A", MEME, 500_000, 0)],
+            ix=("Sell",), progs=(PUMPSWAP,)),
+        _tx("sig17_sell_b", 211, ["SELLER_B"], {"SELLER_B": 35, "POOL": -35}, [("SELLER_B", MEME, 400_000, 0)],
+            ix=("Sell",), progs=(PUMPSWAP,)),
+        _tx("sig18_sell_c", 212, ["SELLER_C"], {"SELLER_C": 5, "POOL": -5}, [("SELLER_C", MEME, 100_000, 0)],
+            ix=("Sell",), progs=(PUMPSWAP,)),
+        _tx("sig19_sell_d", 213, ["SELLER_D"], {"SELLER_D": 30, "POOL": -30}, [("SELLER_D", MEME, 300_000, 0)],
+            ix=("Sell",), progs=(PUMPSWAP,)),
+        _tx("sig20_a_to_hub2", 220, ["SELLER_A"], {"SELLER_A": -69.9, "HUB_2": 69.9}),
+        _tx("sig21_b_to_mid", 221, ["SELLER_B"], {"SELLER_B": -59.9, "MID_1": 59.9}),
+        _tx("sig22_mid_to_hub2", 222, ["MID_1"], {"MID_1": -59.89, "HUB_2": 59.89}),
+        _tx("sig23_c_to_own_cold", 223, ["SELLER_C"], {"SELLER_C": -14.9, "C_COLD": 14.9}),
+        _tx("sig24_d_to_hub2", 224, ["SELLER_D"], {"SELLER_D": -49.9, "HUB_2": 49.9}),
     ]
 
 

@@ -6,6 +6,7 @@
     python3 -m fundtrace forward ADDR               # where did it go?
     python3 -m fundtrace deposit ADDR [ADDR ...]    # is it an exchange deposit address?
     python3 -m fundtrace funding ADDR --before SIG  # who paid just before this transaction?
+    python3 -m fundtrace sinks ADDR ADDR ...        # where does the money of a group converge?
     python3 -m fundtrace ledger ADDR                # full history -> ledger_<ADDR>.jsonl (resumable)
     python3 -m fundtrace summary ledger_<ADDR>.jsonl
     python3 -m fundtrace stables ADDR               # USDC / USDT counterparties, from the ledger
@@ -18,7 +19,7 @@ import sys
 import tempfile
 
 from . import labels as lab
-from . import ledger, trace
+from . import ledger, sinks, trace
 from .rpc import Rpc
 
 
@@ -73,6 +74,20 @@ def show_funding(r):
         print(f"  <- {x['sol']:,.4f} SOL from {x['from']}  {ts(x['t'])}  {x['sig']}{flag}")
 
 
+def show_sinks(r):
+    found = r["sinks"]
+    print(f"sinks of {len(r['wallets'])} wallets (depth {r['depth']}): {len(found)} address(es) got money from "
+          f"{r['min_senders']}+ of them")
+    w = _w(x["addr"] for x in found)
+    for x in found:
+        tag = f"  [{x['label']}]" if x["label"] else ""
+        via = f"  via {', '.join(x['via'])}" if x["via"] else ""
+        print(f"  {x['addr']:<{w}} {x['senders']}/{x['of']} wallets {x['sol']:>12,.4f} SOL  x{x['transfers']:<3} "
+              f"{ts(x['first'])} .. {ts(x['last'])}{via}{tag}")
+    if not found:
+        print("  no shared destination: these wallets do not send their money to the same place")
+
+
 def show_summary(s, top=15):
     print(f"{s['rows']} transactions, {ts(s['from'])} -> {ts(s['to'])}: {s['kinds']}")
     print(f"trading net {s['trade_net_sol']:+,.4f} SOL; transfers sent {s['sent_sol']:,.4f} SOL, "
@@ -110,6 +125,10 @@ def demo():
         print()
         show_funding(trace.funding(rpc, "FRESH_W", "sig05_buy"))
         print()
+        group = ["SELLER_A", "SELLER_B", "SELLER_C", "SELLER_D"]
+        show_sinks(sinks.sinks(rpc, group, LABELS))
+        show_sinks(sinks.sinks(rpc, group, LABELS, depth=2))
+        print()
         path = os.path.join(d, "ledger_FRESH_W.jsonl")
         ledger.build(rpc, "FRESH_W", path)
         show_summary(ledger.summarize(ledger.read(path), LABELS))
@@ -144,6 +163,15 @@ def main(argv=None):
     p.add_argument("--before", required=True, help="signature of the transaction")
     p.add_argument("-n", type=int, default=12)
     p.add_argument("--min-sol", type=float, default=1.0)
+    p = sub.add_parser("sinks", help="addresses that received money from several wallets of a group")
+    p.add_argument("addr", nargs="*")
+    p.add_argument("--file", help="a file with one address per line")
+    p.add_argument("--depth", type=int, default=1, choices=(1, 2), help="2 also follows one-off intermediaries")
+    p.add_argument("--min-senders", type=int, default=2)
+    p.add_argument("-n", type=int, default=100, help="recent transactions read per wallet")
+    p.add_argument("--min-sol", type=float, default=0.01)
+    p.add_argument("--since", help="only transfers at or after this time (ISO, e.g. 2026-09-14T00:00:00Z)")
+    p.add_argument("--busy", type=int, default=50)
     p = sub.add_parser("ledger", help="full history of an address into a JSONL ledger (resumable)")
     p.add_argument("addr")
     p.add_argument("--out")
@@ -177,6 +205,15 @@ def main(argv=None):
             out(trace.deposit(rpc, x, labels, a.n), show_deposit)
     elif a.cmd == "funding":
         out(trace.funding(rpc, a.addr, a.before, a.n, a.min_sol), show_funding)
+    elif a.cmd == "sinks":
+        group = list(a.addr)
+        if a.file:
+            with open(a.file) as f:
+                group += [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        if len(group) < 2:
+            ap.error("sinks needs at least two wallets")
+        since = datetime.datetime.fromisoformat(a.since.replace("Z", "+00:00")).timestamp() if a.since else None
+        out(sinks.sinks(rpc, group, labels, a.n, a.min_sol, a.min_senders, a.depth, a.busy, since), show_sinks)
     elif a.cmd == "ledger":
         path = a.out or f"ledger_{a.addr}.jsonl"
         r = ledger.build(rpc, a.addr, path, a.cap,

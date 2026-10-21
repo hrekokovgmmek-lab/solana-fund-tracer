@@ -6,9 +6,10 @@ import tempfile
 import unittest
 
 from fundtrace import labels as lab
-from fundtrace import ledger, parse, trace
+from fundtrace import ledger, parse, sinks, trace
 from fundtrace.__main__ import main
-from fundtrace.demo import LABELS, MEME, USDC, Chain, _tx, chain
+from fundtrace.demo import LABELS, MEME, T0, USDC, Chain, _tx, chain
+from fundtrace.parse import WSOL
 from fundtrace.rpc import Rpc, RpcError
 
 
@@ -95,6 +96,43 @@ class TraceTest(Base):
         f = trace.funding(self.rpc, "FRESH_W", "sig05_buy")["funding"]
         self.assertEqual([(x["from"], x["sol"], x["memo"]) for x in f], [("HUB_1", 20.0, True), ("HUB_1", 50.0, False)])
         self.assertIn("ONE_OFF_COSIGNER", f[0]["signers"])
+
+
+class SinksTest(Base):
+    GROUP = ["SELLER_A", "SELLER_B", "SELLER_C", "SELLER_D"]
+
+    def test_direct_convergence(self):
+        r = sinks.sinks(self.rpc, self.GROUP, LABELS)
+        self.assertEqual([(x["addr"], x["senders"], x["sol"]) for x in r["sinks"]], [("HUB_2", 2, 119.8)])
+        self.assertEqual(sorted(r["sinks"][0]["from"]), ["SELLER_A", "SELLER_D"])
+
+    def test_depth_two_follows_one_off_wallets(self):
+        r = sinks.sinks(self.rpc, self.GROUP, LABELS, depth=2)
+        top = r["sinks"][0]
+        self.assertEqual((top["addr"], top["senders"], top["via"]), ("HUB_2", 3, ["MID_1"]))
+        self.assertAlmostEqual(top["sol"], 179.69)
+
+    def test_min_senders_one_lists_every_destination(self):
+        got = {x["addr"] for x in sinks.sinks(self.rpc, self.GROUP, LABELS, min_senders=1)["sinks"]}
+        self.assertEqual(got, {"HUB_2", "MID_1", "C_COLD"})
+
+    def test_since_drops_earlier_transfers(self):
+        since = T0 + 221 * 60
+        self.assertEqual(sinks.sinks(self.rpc, self.GROUP, LABELS, since=since)["sinks"], [])
+
+    def test_trades_and_group_internal_transfers_are_not_outflows(self):
+        txs = [_tx("buy", 1, ["A"], {"A": -5, "POOL": 5}, [("A", MEME, 0, 9)], ix=("Buy",)),
+               _tx("a_to_b", 2, ["A"], {"A": -3, "B": 3}),
+               _tx("b_to_x", 3, ["B"], {"B": -2, "X": 2})]
+        rpc, _ = rpc_for(txs, self.tmp)
+        self.assertEqual(sinks.outflows(rpc, "A"), [("B", 3.0, T0 + 120, "a_to_b")])
+        r = sinks.sinks(rpc, ["A", "B"], {}, min_senders=1)
+        self.assertEqual([x["addr"] for x in r["sinks"]], ["X"])          # A -> B stays inside the group
+
+    def test_wrapped_sol_credits_the_owner_not_the_token_account(self):
+        tx = _tx("wsol", 5, ["S"], {"HUB:So1111": 10}, [("S", WSOL, 10, 0), ("HUB", WSOL, 0, 10)], ix=("Transfer",))
+        rpc, _ = rpc_for([tx], self.tmp)
+        self.assertEqual([w for w, *_ in sinks.outflows(rpc, "S")], ["HUB"])
 
 
 class LedgerTest(Base):
@@ -195,6 +233,11 @@ class CliTest(unittest.TestCase):
         self.assertIn("DEPOSIT_D1: DEPOSIT ADDRESS", out)
         self.assertIn("MEMO, signers: ONE_OFF_COSIGNER", out)
         self.assertIn("BRIDGE", out)
+        self.assertIn("3/4 wallets", out)
+
+    def test_sinks_needs_two_wallets(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            main(["sinks", "ONLY_ONE"])
 
 
 if __name__ == "__main__":

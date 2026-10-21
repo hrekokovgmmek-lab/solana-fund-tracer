@@ -29,6 +29,15 @@ def keys_of(t):
     return ks + la.get("writable", []) + la.get("readonly", [])
 
 
+def token_accounts(t):
+    """Keys of the token accounts a transaction touched. Their lamports move with wrapped SOL, so they are not
+    counterparties in their own right: the owner is."""
+    meta = t.get("meta") or {}
+    ks = keys_of(t)
+    idx = {x["accountIndex"] for x in (meta.get("preTokenBalances") or []) + (meta.get("postTokenBalances") or [])}
+    return {ks[i] for i in idx if i < len(ks)}
+
+
 def _ui(x):
     return float(((x or {}).get("uiTokenAmount") or {}).get("uiAmount") or 0)
 
