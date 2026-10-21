@@ -69,6 +69,10 @@ addresses and 542 SOL to Gate.io, each confirmed by sweeps into the exchanges' h
 about $54k sent through the Rhino.fi and Mayan bridges to BSC, Base and Polygon. The bridge legs were followed by
 hand in the bridges' explorers. The whole case took one day and about 18,500 requests to the public RPC.
 
+`sinks` was later checked on the same case. Given the group's eight "whale" wallets (30 latest transactions each,
+one hop, about 130 calls to the public RPC), it returned exactly one address that received money from three of
+them: 3,985 SOL in 5 transfers. It was the same hub found earlier by hand.
+
 ## Labels
 
 The tracer stops at labelled exchange wallets, and a deposit address is one that sweeps into such a wallet.
