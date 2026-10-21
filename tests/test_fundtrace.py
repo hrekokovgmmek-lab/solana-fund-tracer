@@ -4,9 +4,10 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from fundtrace import labels as lab
-from fundtrace import ledger, parse, sinks, trace
+from fundtrace import ledger, parse, relay, report, sinks, trace
 from fundtrace.__main__ import main
 from fundtrace.demo import LABELS, MEME, T0, USDC, Chain, _tx, chain
 from fundtrace.parse import WSOL
@@ -135,6 +136,155 @@ class SinksTest(Base):
         self.assertEqual([w for w, *_ in sinks.outflows(rpc, "S")], ["HUB"])
 
 
+class RelayTest(Base):
+    AMOUNT = 187.4416
+
+    def walk(self, sig, rpc=None, labels=LABELS, **kw):
+        rpc = rpc or self.rpc
+        return relay.relay(rpc, relay.transfer(rpc, sig), labels, **kw)
+
+    def test_walks_both_ways_from_the_middle(self):
+        r = self.walk("sig28_relay2_to_relay3")
+        self.assertEqual([h["sig"][:5] for h in r["hops"]], ["sig25", "sig26", "sig28", "sig29"])
+        self.assertEqual((r["first"], r["last"], r["seconds"]), ("HUB_2", "DEPOSIT_D2", 9))
+        self.assertEqual([h["dt"] for h in r["hops"]], [None, 3, 3, 3])
+        self.assertEqual((r["stop_back"], r["stop_forward"], r["round"]), ("no match", "no match", False))
+
+    def test_a_wider_window_follows_the_sweep_into_the_exchange(self):
+        r = self.walk("sig26_relay1_to_relay2", window=3600)
+        self.assertEqual((r["last"], r["stop_forward"]), ("EXCHANGE_HOT", "exchange"))
+        self.assertAlmostEqual(r["hops"][-1]["sol"], self.AMOUNT - 0.000005)     # the exchange paid the fee
+        self.assertEqual(r["labels"], {"EXCHANGE_HOT": "Exchange hot wallet 1"})
+
+    def test_a_short_window_cuts_the_chain(self):
+        self.assertEqual([h["sig"] for h in self.walk("sig26_relay1_to_relay2", window=2)["hops"]],
+                         ["sig26_relay1_to_relay2"])
+
+    def test_find_by_address_and_amount(self):
+        self.assertEqual(relay.find(self.rpc, "RELAY_3", self.AMOUNT)["sig"], "sig29_relay3_to_deposit")
+        with self.assertRaises(ValueError):
+            relay.find(self.rpc, "RELAY_3", 99.0)
+
+    def test_amount_must_match_within_tolerance(self):
+        txs = [_tx("a", 1, ["A"], {"A": -12.3456, "B": 12.3456}, t=T0),
+               _tx("b", 2, ["B"], {"B": -12.3455, "C": 12.3455}, t=T0 + 2),     # a fee taken on the way: same money
+               _tx("c", 3, ["C"], {"C": -12.3556, "D": 12.3556}, t=T0 + 4)]     # 0.01 SOL more: other money
+        rpc, _ = rpc_for(txs, self.tmp)
+        self.assertEqual(self.walk("a", rpc, {})["last"], "C")
+        self.assertEqual(self.walk("a", rpc, {}, tol=0.02)["last"], "D")
+
+    def test_money_coming_back_is_a_loop_and_round_sums_are_flagged(self):
+        txs = [_tx("a", 1, ["A"], {"A": -5, "B": 5}, t=T0), _tx("b", 2, ["B"], {"B": -5, "A": 5}, t=T0 + 1)]
+        rpc, _ = rpc_for(txs, self.tmp)
+        r = self.walk("a", rpc, {})
+        self.assertEqual((len(r["hops"]), r["stop_forward"], r["round"]), (2, "loop", True))
+        self.assertTrue(relay.is_round(2500.000005))                # fee crumbs do not make a sum non-round
+        self.assertFalse(relay.is_round(187.4416))
+
+    def test_a_transfer_the_wallet_only_signed_is_not_its_own(self):
+        txs = [_tx("a", 1, ["A"], {"A": -3.3333, "B": 3.3333}, t=T0),
+               _tx("x", 2, ["B", "X"], {"X": -3.3333, "C": 3.3333}, t=T0 + 1)]      # B pays the fee, X the money
+        rpc, _ = rpc_for(txs, self.tmp)
+        self.assertEqual(self.walk("a", rpc, {})["last"], "B")
+
+    def test_reads_inside_the_window_are_capped_nearest_first(self):
+        txs = [_tx("in", 1, ["A"], {"A": -4.4444, "B": 4.4444}, t=T0)]
+        txs += [_tx(f"n{i}", 2 + i, ["B"], {"B": -0.2, f"N{i}": 0.2}, t=T0 + 1) for i in range(5)]
+        txs += [_tx("fwd", 10, ["B"], {"B": -4.4444, "C": 4.4444}, t=T0 + 2)]
+        rpc, chain = rpc_for(txs, self.tmp)
+        self.assertEqual(self.walk("in", rpc, {}, reads=6)["last"], "C")
+        r = self.walk("in", rpc, {}, reads=4)
+        self.assertEqual((r["last"], r["stop_forward"]), ("B", "busy address"))
+        rpc, chain = rpc_for(txs, os.path.join(self.tmp, "cold"))
+        r = self.walk("fwd", rpc, {}, reads=2, window=3)
+        self.assertEqual((r["first"], r["stop_back"]), ("B", "busy address"))
+        self.assertEqual(chain.calls, 5)          # the start, B's page, its 2 nearest transactions, C's page
+
+    def test_a_trade_is_not_a_transfer(self):
+        with self.assertRaises(ValueError):
+            relay.transfer(self.rpc, "sig05_buy")
+
+    def test_wrapped_sol_is_followed_to_its_owner(self):
+        tx = _tx("wsol", 5, ["S"], {"HUB:So1111": 10}, [("S", WSOL, 10, 0), ("HUB", WSOL, 0, 10)], ix=("Transfer",))
+        rpc, _ = rpc_for([tx], self.tmp)
+        h = relay.transfer(rpc, "wsol")
+        self.assertEqual((h["from"], h["to"], h["sol"]), ("S", "HUB", 10.0))
+
+    def busy_chain(self, in_window):
+        """B gets 7.77 SOL and sends it on 5 s later; `in_window` other payments come first, and B stays busy for
+        hours after, so its newest signatures say nothing about the window. A stranger's block lands later,
+        after two skipped slots."""
+        txs = [_tx("a", 10, ["A"], {"A": -7.77, "B": 7.77}, t=T0)]
+        txs += [_tx(f"w{i}", 11 + i, ["B"], {"B": -0.1, f"Y{i}": 0.1}, t=T0 + 1) for i in range(in_window)]
+        txs += [_tx("fwd", 20, ["B"], {"B": -7.77, "C": 7.77}, t=T0 + 5),
+                _tx("stranger", 312, ["S"], {"S": -1, "Z": 1}, t=T0 + 120)]
+        txs += [_tx(f"late{i}", 500 + i, ["B"], {"B": -0.1, f"X{i}": 0.1}, t=T0 + 3600 + i) for i in range(5)]
+        return rpc_for(txs, self.tmp)[0]
+
+    def test_a_busy_address_is_read_back_from_a_later_block(self):
+        with mock.patch.object(relay, "PAGE", 3):
+            r = self.walk("a", self.busy_chain(0), {})
+        self.assertEqual((r["last"], r["stop_forward"]), ("C", "no match"))
+
+    def test_too_busy_inside_the_window_stops_the_walk(self):
+        with mock.patch.object(relay, "PAGE", 3):
+            r = self.walk("a", self.busy_chain(3), {})
+        self.assertEqual((r["last"], r["stop_forward"]), ("B", "busy address"))
+
+
+class ReportTest(Base):
+    def results(self):
+        return [relay.relay(self.rpc, relay.transfer(self.rpc, "sig28_relay2_to_relay3"), LABELS),
+                trace.back(self.rpc, "FRESH_W", LABELS), trace.forward(self.rpc, "FRESH_W", LABELS),
+                sinks.sinks(self.rpc, SinksTest.GROUP, LABELS, depth=2),
+                trace.funding(self.rpc, "FRESH_W", "sig05_buy"), trace.deposit(self.rpc, "DEPOSIT_D1", LABELS)]
+
+    def test_kind_is_read_from_the_keys(self):
+        self.assertEqual([report.kind(r) for r in self.results()],
+                         ["relay", "back", "forward", "sinks", "funding", "deposit"])
+
+    def test_edges_follow_the_money(self):
+        rs = self.results()
+        self.assertEqual([(e["from"], e["to"]) for e in report.edges(rs[1])],
+                         [("EXCHANGE_HOT", "HUB_2"), ("HUB_2", "HUB_1"), ("HUB_1", "FRESH_W")])
+        self.assertEqual({(e["from"], e["to"]) for e in report.edges(rs[3])},
+                         {("SELLER_A", "HUB_2"), ("SELLER_B", "MID_1"), ("MID_1", "HUB_2"), ("SELLER_D", "HUB_2")})
+        self.assertEqual(report.edges(rs[0])[2]["note"], "start · +3 s")
+        self.assertEqual([e["note"] for e in report.edges(rs[3]) if e["from"] == "MID_1"], ["via a one-off wallet"])
+
+    def test_every_transfer_links_to_solscan(self):
+        page = report.render(self.results(), LABELS)
+        for sig in ("sig25_hub2_to_relay1", "sig29_relay3_to_deposit", "sig01_exchange_withdrawal",
+                    "sig09_sweep_to_exchange", "sig21_b_to_mid", "sig22_mid_to_hub2", "sig04_memo_cosigned"):
+            self.assertIn(f'href="https://solscan.io/tx/{sig}"', page)
+        self.assertIn('href="https://solscan.io/account/DEPOSIT_D2"', page)
+        self.assertEqual(page.count("<svg"), 5)                  # deposit has no transfers to draw
+
+    def test_addresses_shared_by_sections(self):
+        self.assertEqual(report.where(self.results())["HUB_2"], [1, 2, 4])
+
+    def test_a_cycle_is_drawn_underneath(self):
+        r = trace.back(self.rpc, "FRESH_W", {})                  # no labels: the walk comes back to FRESH_W
+        svg = report.diagram(report.edges(r), report.roles(r), lambda a: "", 1)
+        self.assertEqual(svg.count('class="edge back"'), 1)
+
+    def test_text_from_the_chain_is_escaped(self):
+        bad = {"EXCHANGE_HOT": {"cex": "x", "name": "<script>alert(1)</script>"}}
+        r = trace.forward(self.rpc, "FRESH_W", bad)
+        r["chain"][0]["out"]["sig"] = 'x" onmouseover="alert(1)'
+        page = report.render([r], bad)
+        self.assertNotIn("<script>alert", page)
+        self.assertNotIn('" onmouseover', page)
+        self.assertIn("&lt;script&gt;", page)
+        self.assertIn("/tx/x%22%20onmouseover%3D%22alert%281%29", page)
+
+    def test_load_reads_several_values_per_file(self):
+        path = os.path.join(self.tmp, "r.json")
+        with open(path, "w") as f:
+            f.write(json.dumps({"a": 1}, indent=1) + "\n" + json.dumps([{"b": 2}, {"c": 3}]) + "\n")
+        self.assertEqual(report.load([path]), [{"a": 1}, {"b": 2}, {"c": 3}])
+
+
 class LedgerTest(Base):
     def test_build_is_resumable(self):
         path = os.path.join(self.tmp, "l.jsonl")
@@ -179,6 +329,13 @@ class RpcTest(Base):
         self.rpc.tx("sig03_hub1_to_fresh")
         self.assertEqual(self.chain.calls, n + 1)
 
+    def test_before_and_until_may_be_any_transaction(self):
+        # what `relay` relies on to read a busy address back from a stranger's later block
+        self.assertEqual([x["signature"] for x in self.rpc.sigs("HUB_2", until="sig24_d_to_hub2")],
+                         ["sig25_hub2_to_relay1"])
+        self.assertEqual([x["signature"][:5] for x in self.rpc.sigs("HUB_2", before="sig23_c_to_own_cold")],
+                         ["sig22", "sig20", "sig02", "sig01"])
+
     def test_rate_limit_error_is_retried(self):
         answers = [json.dumps({"error": {"code": 429, "message": "Too many requests"}}),
                    json.dumps({"result": {"ok": 1}})]
@@ -187,6 +344,13 @@ class RpcTest(Base):
                   sleep=slept.append)
         self.assertEqual(rpc.call("getX", [])["result"], {"ok": 1})
         self.assertEqual(slept, [5])
+
+    def test_long_term_storage_hiccup_is_retried(self):
+        answers = [json.dumps({"error": {"code": -32019, "message": "Failed to query long-term storage; please try again"}}),
+                   json.dumps({"result": []})]
+        rpc = Rpc(cache_dir=os.path.join(self.tmp, "c5"), rps=0, transport=lambda u, b: answers.pop(0),
+                  sleep=lambda s: None)
+        self.assertEqual(rpc.call("getSignaturesForAddress", ["A", {}])["result"], [])
 
     def test_real_error_is_raised_and_not_cached(self):
         rpc = Rpc(cache_dir=os.path.join(self.tmp, "c3"), rps=0,
@@ -234,6 +398,31 @@ class CliTest(unittest.TestCase):
         self.assertIn("MEMO, signers: ONE_OFF_COSIGNER", out)
         self.assertIn("BRIDGE", out)
         self.assertIn("3/4 wallets", out)
+        self.assertIn("relay of 187.4416 SOL from sig28_relay2_to_relay3: 4 hop(s) in 9 s", out)
+
+    def test_html_flag_and_report_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            quiet = lambda: (contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()))
+            page = os.path.join(d, "demo.html")
+            o, e = quiet()
+            with o, e:
+                main(["--html", page, "demo"])
+            with open(page) as f:
+                self.assertIn("solscan.io/tx/sig29_relay3_to_deposit", f.read())
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                main(["--json", "demo"])
+            js = os.path.join(d, "demo.json")
+            with open(js, "w") as f:
+                f.write(buf.getvalue())
+            out = os.path.join(d, "case.html")
+            o, e = quiet()
+            with o, e:
+                main(["--labels", os.path.join(d, "none.json"), "report", js, "-o", out, "--title", "Case <1>"])
+            with open(out) as f:
+                html = f.read()
+            self.assertIn("<title>Case &lt;1&gt;</title>", html)
+            self.assertEqual(html.count('<section id="s'), 10)
 
     def test_sinks_needs_two_wallets(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):

@@ -39,7 +39,7 @@ def sinks(rpc, wallets, labels, n=100, min_sol=0.01, min_senders=2, depth=1, bus
 
     depth 2 also follows money through one-off intermediaries: a recipient that got money from a single wallet of the
     group and has fewer than `busy` transactions is walked one more hop, and what it forwards is credited to the
-    wallet the money came from."""
+    wallet the money came from. Each row lists its transfers in `legs`, the hops through intermediaries included."""
     group = list(dict.fromkeys(wallets))
     seen_tx = set()
     flows = {}                                   # recipient -> {"from": {origin: sol}, "n", "first", "last", "via"}
@@ -48,7 +48,8 @@ def sinks(rpc, wallets, labels, n=100, min_sol=0.01, min_senders=2, depth=1, bus
         if who in group or (sig, who) in seen_tx:
             return
         seen_tx.add((sig, who))
-        f = flows.setdefault(who, {"from": {}, "n": 0, "first": None, "last": None, "via": set(), "sigs": []})
+        f = flows.setdefault(who, {"from": {}, "n": 0, "first": None, "last": None, "via": set(), "sigs": [],
+                                   "legs": []})
         f["from"][origin] = round(f["from"].get(origin, 0.0) + sol, 9)
         f["n"] += 1
         if t:
@@ -58,6 +59,7 @@ def sinks(rpc, wallets, labels, n=100, min_sol=0.01, min_senders=2, depth=1, bus
             f["via"].add(via)
         if len(f["sigs"]) < 3:
             f["sigs"].append(sig)
+        f["legs"].append({"from": via or origin, "to": who, "sol": sol, "t": t, "sig": sig})
 
     first_hop = {}
     for w in group:
@@ -82,6 +84,7 @@ def sinks(rpc, wallets, labels, n=100, min_sol=0.01, min_senders=2, depth=1, bus
             continue
         rows.append({"addr": who, "label": name(labels, who), "senders": len(f["from"]), "of": len(group),
                      "sol": round(sum(f["from"].values()), 6), "transfers": f["n"], "first": f["first"],
-                     "last": f["last"], "via": sorted(f["via"]), "from": f["from"], "sigs": f["sigs"]})
+                     "last": f["last"], "via": sorted(f["via"]), "from": f["from"], "sigs": f["sigs"],
+                     "legs": f["legs"] + [g for v in sorted(f["via"]) for g in flows[v]["legs"]]})
     rows.sort(key=lambda r: (-r["senders"], -r["sol"]))
     return {"wallets": group, "depth": depth, "min_senders": min_senders, "sinks": rows}

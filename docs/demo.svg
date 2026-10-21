@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1088" height="556" viewBox="0 0 1088 556" role="img" aria-label="solana-fund-tracer — python3 -m fundtrace demo">
-<rect x="0.5" y="0.5" width="1087" height="555" rx="10" fill="#0d1117" stroke="#30363d"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1088" height="708" viewBox="0 0 1088 708" role="img" aria-label="solana-fund-tracer — python3 -m fundtrace demo">
+<rect x="0.5" y="0.5" width="1087" height="707" rx="10" fill="#0d1117" stroke="#30363d"/>
 <path d="M0.5 30 V10.5 A10 10 0 0 1 10.5 0.5 H1077.5 A10 10 0 0 1 1087.5 10.5 V30 Z" fill="#161b22"/>
 <line x1="0.5" y1="30" x2="1087.5" y2="30" stroke="#30363d"/>
 <circle cx="18" cy="15.5" r="5.5" fill="#ff5f57"/><circle cx="36" cy="15.5" r="5.5" fill="#febc2e"/><circle cx="54" cy="15.5" r="5.5" fill="#28c840"/>
@@ -11,7 +11,7 @@
 <text x="18" y="107" xml:space="preserve"><tspan fill="#f0f6fc" font-weight="600">back from FRESH_W: 3 hop(s), stopped: exchange</tspan></text>
 <text x="18" y="126" xml:space="preserve"><tspan fill="#c9d1d9">  FRESH_W        5 tx  &lt;- 50.0000 SOL from HUB_1  2026-01-01 02:00  sig03_hub1_to_fresh</tspan></text>
 <text x="18" y="145" xml:space="preserve"><tspan fill="#c9d1d9">  HUB_1          4 tx  &lt;- 200.0000 SOL from HUB_2  2026-01-01 01:50  sig02_hub2_to_hub1</tspan></text>
-<text x="18" y="164" xml:space="preserve"><tspan fill="#c9d1d9">  HUB_2          5 tx  &lt;- 500.0000 SOL from EXCHANGE_HOT  2026-01-01 01:40  sig01_exchange_withdrawal</tspan></text>
+<text x="18" y="164" xml:space="preserve"><tspan fill="#c9d1d9">  HUB_2          6 tx  &lt;- 500.0000 SOL from EXCHANGE_HOT  2026-01-01 01:40  sig01_exchange_withdrawal</tspan></text>
 <text x="18" y="183" xml:space="preserve"><tspan fill="#c9d1d9">  EXCHANGE_HOT         [Exchange hot wallet 1]</tspan></text>
 <text x="18" y="202" xml:space="preserve"><tspan fill="#c9d1d9"></tspan></text>
 <text x="18" y="221" xml:space="preserve"><tspan fill="#f0f6fc" font-weight="600">forward from FRESH_W: 3 hop(s), stopped: exchange</tspan></text>
@@ -31,4 +31,12 @@
 <text x="18" y="487" xml:space="preserve"><tspan fill="#c9d1d9">  HUB_2    2/4 wallets     119.8000 SOL  x2   2026-01-01 03:40 .. 2026-01-01 03:44</tspan></text>
 <text x="18" y="506" xml:space="preserve"><tspan fill="#f0f6fc" font-weight="600">sinks of 4 wallets (depth 2): 1 address(es) got money from 2+ of them</tspan></text>
 <text x="18" y="525" xml:space="preserve"><tspan fill="#c9d1d9">  HUB_2    3/4 wallets     179.6900 SOL  x3   2026-01-01 03:40 .. 2026-01-01 03:44  via MID_1</tspan></text>
+<text x="18" y="544" xml:space="preserve"><tspan fill="#c9d1d9"></tspan></text>
+<text x="18" y="563" xml:space="preserve"><tspan fill="#f0f6fc" font-weight="600">relay of 187.4416 SOL from sig28_relay2_to_relay3: 4 hop(s) in 9 s, each within 60 s of the one before</tspan></text>
+<text x="18" y="582" xml:space="preserve"><tspan fill="#c9d1d9">  HUB_2      -&gt; RELAY_1           187.4416 SOL  2026-01-01 05:00:00          sig25_hub2_to_relay1</tspan></text>
+<text x="18" y="601" xml:space="preserve"><tspan fill="#c9d1d9">  RELAY_1    -&gt; RELAY_2           187.4416 SOL  2026-01-01 05:00:03    +3 s  sig26_relay1_to_relay2</tspan></text>
+<text x="18" y="620" xml:space="preserve"><tspan fill="#c9d1d9">  RELAY_2    -&gt; RELAY_3           187.4416 SOL  2026-01-01 05:00:06    +3 s  sig28_relay2_to_relay3</tspan></text>
+<text x="18" y="639" xml:space="preserve"><tspan fill="#c9d1d9">  RELAY_3    -&gt; DEPOSIT_D2        187.4416 SOL  2026-01-01 05:00:09    +3 s  sig29_relay3_to_deposit</tspan></text>
+<text x="18" y="658" xml:space="preserve"><tspan fill="#c9d1d9">  back: stopped at HUB_2: no transfer of this amount within 60 s</tspan></text>
+<text x="18" y="677" xml:space="preserve"><tspan fill="#c9d1d9">  forward: stopped at DEPOSIT_D2: no transfer of this amount within 60 s</tspan></text>
 </g></svg>

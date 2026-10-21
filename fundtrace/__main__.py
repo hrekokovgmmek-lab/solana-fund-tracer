@@ -7,24 +7,33 @@
     python3 -m fundtrace deposit ADDR [ADDR ...]    # is it an exchange deposit address?
     python3 -m fundtrace funding ADDR --before SIG  # who paid just before this transaction?
     python3 -m fundtrace sinks ADDR ADDR ...        # where does the money of a group converge?
+    python3 -m fundtrace relay SIG                  # one exact amount passed from wallet to wallet within seconds
+    python3 -m fundtrace report OUT.json ...        # one HTML page: a diagram and a Solscan link per transaction
     python3 -m fundtrace ledger ADDR                # full history -> ledger_<ADDR>.jsonl (resumable)
     python3 -m fundtrace summary ledger_<ADDR>.jsonl
     python3 -m fundtrace stables ADDR               # USDC / USDT counterparties, from the ledger
 """
 import argparse
+import contextlib
 import datetime
+import io
 import json
 import os
 import sys
 import tempfile
 
+from . import __version__
 from . import labels as lab
-from . import ledger, sinks, trace
+from . import ledger, relay, report, sinks, trace
 from .rpc import Rpc
 
 
 def ts(x):
     return datetime.datetime.fromtimestamp(x, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M") if x else "?"
+
+
+def tss(x):
+    return datetime.datetime.fromtimestamp(x, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if x else "?"
 
 
 def _w(addrs):
@@ -88,6 +97,23 @@ def show_sinks(r):
         print("  no shared destination: these wallets do not send their money to the same place")
 
 
+def show_relay(r):
+    h = r["hops"]
+    print(f"relay of {report.fmt(r['amount'])} SOL from {r['start']}: {len(h)} hop(s) in {r['seconds']} s, "
+          f"each within {r['window']:g} s of the one before")
+    if r["round"]:
+        print("  note: a round amount, so a match can be a coincidence")
+    w = _w([x["from"] for x in h] + [x["to"] for x in h])
+    for x in h:
+        dt = f"+{x['dt']} s" if x["dt"] is not None else ""
+        tag = f"  [{r['labels'][x['to']]}]" if x["to"] in r["labels"] else ""
+        print(f"  {x['from']:<{w}} -> {x['to']:<{w}} {report.fmt(x['sol']):>15} SOL  {tss(x['t'])} {dt:>7}  "
+              f"{x['sig']}{tag}")
+    why = {"no match": f"no transfer of this amount within {r['window']:g} s"}
+    print(f"  back: stopped at {r['first']}: {why.get(r['stop_back'], r['stop_back'])}")
+    print(f"  forward: stopped at {r['last']}: {why.get(r['stop_forward'], r['stop_forward'])}")
+
+
 def show_summary(s, top=15):
     print(f"{s['rows']} transactions, {ts(s['from'])} -> {ts(s['to'])}: {s['kinds']}")
     print(f"trading net {s['trade_net_sol']:+,.4f} SOL; transfers sent {s['sent_sol']:,.4f} SOL, "
@@ -111,31 +137,50 @@ def show_stables(r):
               f"received {f['in']:>12,.2f} x{f['n_in']:<3} last {ts(f['last'])}{tag}")
 
 
-def demo():
+SHOW = {"back": show_back, "forward": show_forward, "deposit": show_deposit, "funding": show_funding,
+        "sinks": show_sinks, "relay": show_relay, "summary": show_summary, "stables": show_stables}
+
+
+def as_text(r):
+    """What the command printed for this result, for the HTML report."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        SHOW[report.kind(r)](r)
+    return buf.getvalue()
+
+
+def write_report(path, results, labels, title):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(report.render(results, labels, title, text=as_text, version=__version__))
+    print(f"report: {path} ({len(results)} result(s))", file=sys.stderr)
+
+
+def demo(out):
     from .demo import LABELS, Chain
     with tempfile.TemporaryDirectory() as d:
         rpc = Rpc(cache_dir=os.path.join(d, "cache"), rps=0, transport=Chain().transport)
-        print("Synthetic chain — every address and amount is made up (see fundtrace/demo.py).\n")
-        show_back(trace.back(rpc, "FRESH_W", LABELS))
+        out(trace.back(rpc, "FRESH_W", LABELS), show_back)
         print()
-        show_forward(trace.forward(rpc, "FRESH_W", LABELS))
+        out(trace.forward(rpc, "FRESH_W", LABELS), show_forward)
         print()
-        show_deposit(trace.deposit(rpc, "DEPOSIT_D1", LABELS))
-        show_deposit(trace.deposit(rpc, "COLLECTOR", LABELS))
+        out(trace.deposit(rpc, "DEPOSIT_D1", LABELS), show_deposit)
+        out(trace.deposit(rpc, "COLLECTOR", LABELS), show_deposit)
         print()
-        show_funding(trace.funding(rpc, "FRESH_W", "sig05_buy"))
+        out(trace.funding(rpc, "FRESH_W", "sig05_buy"), show_funding)
         print()
         group = ["SELLER_A", "SELLER_B", "SELLER_C", "SELLER_D"]
-        show_sinks(sinks.sinks(rpc, group, LABELS))
-        show_sinks(sinks.sinks(rpc, group, LABELS, depth=2))
+        out(sinks.sinks(rpc, group, LABELS), show_sinks)
+        out(sinks.sinks(rpc, group, LABELS, depth=2), show_sinks)
+        print()
+        out(relay.relay(rpc, relay.transfer(rpc, "sig28_relay2_to_relay3"), LABELS), show_relay)
         print()
         path = os.path.join(d, "ledger_FRESH_W.jsonl")
         ledger.build(rpc, "FRESH_W", path)
-        show_summary(ledger.summarize(ledger.read(path), LABELS))
+        out(ledger.summarize(ledger.read(path), LABELS), show_summary)
         print()
         cpath = os.path.join(d, "ledger_COLLECTOR.jsonl")
         ledger.build(rpc, "COLLECTOR", cpath)
-        show_stables(ledger.stables(rpc, "COLLECTOR", ledger.read(cpath), LABELS))
+        out(ledger.stables(rpc, "COLLECTOR", ledger.read(cpath), LABELS), show_stables)
 
 
 def main(argv=None):
@@ -146,6 +191,7 @@ def main(argv=None):
     ap.add_argument("--labels", default="labels.json", help="exchange labels file (default labels.json)")
     ap.add_argument("--fresh", action="store_true", help="re-read signature lists instead of using the cache")
     ap.add_argument("--json", action="store_true", help="print JSON instead of text")
+    ap.add_argument("--html", metavar="PATH", help="also write the result as an HTML page with Solscan links")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("demo", help="offline demo on a synthetic chain")
     sub.add_parser("labels", help="download exchange labels from Dune Spellbook into --labels")
@@ -172,6 +218,20 @@ def main(argv=None):
     p.add_argument("--min-sol", type=float, default=0.01)
     p.add_argument("--since", help="only transfers at or after this time (ISO, e.g. 2026-09-14T00:00:00Z)")
     p.add_argument("--busy", type=int, default=50)
+    p = sub.add_parser("relay", help="follow one exact amount passed from wallet to wallet within seconds")
+    p.add_argument("start", help="signature of one transfer (an address, with --amount)")
+    p.add_argument("--amount", type=float, help="SOL: START is then an address and its latest transfer of this "
+                                                "amount is where the walk starts")
+    p.add_argument("--window", type=float, default=60, help="most seconds between two hops (default 60)")
+    p.add_argument("--tol", type=float, default=0.001, help="most SOL two hops may differ by (default 0.001)")
+    p.add_argument("--max-hops", type=int, default=20, help="per direction")
+    p.add_argument("--reads", type=int, default=30, help="most transactions read per wallet inside the window; "
+                                                          "a busier wallet ends the walk (default 30)")
+    p.add_argument("-n", type=int, default=100, help="with --amount: recent transactions searched")
+    p = sub.add_parser("report", help="one HTML page from saved --json output: a diagram and Solscan links")
+    p.add_argument("path", nargs="+", help="files written with --json (several results in a file are fine)")
+    p.add_argument("-o", "--out", default="report.html")
+    p.add_argument("--title", default="Fund trace")
     p = sub.add_parser("ledger", help="full history of an address into a JSONL ledger (resumable)")
     p.add_argument("addr")
     p.add_argument("--out")
@@ -183,18 +243,34 @@ def main(argv=None):
     p.add_argument("addr")
     p.add_argument("--ledger")
     a = ap.parse_args(argv)
+    results = []
+
+    def out(r, show):
+        results.append(r)
+        if a.json:
+            print(json.dumps(r, indent=1))
+        else:
+            show(r)
 
     if a.cmd == "demo":
-        return demo()
+        from .demo import LABELS
+        if not a.json:
+            print("Synthetic chain — every address and amount is made up (see fundtrace/demo.py).\n")
+        demo(out)
+        if a.html:
+            write_report(a.html, results, LABELS, "fundtrace demo — synthetic chain")
+        return
     if a.cmd == "labels":
         n = lab.fetch(a.labels)
         print(f"{n} exchange addresses written to {a.labels} (Dune Spellbook, Business Source License 1.1)")
         return
     labels = lab.load(a.labels)
+    if a.cmd == "report":
+        write_report(a.out, report.load(a.path), labels, a.title)
+        return
     if not labels and a.cmd in ("back", "forward", "deposit"):
         print(f"note: no labels in {a.labels} — run `python3 -m fundtrace labels` to stop at exchanges", file=sys.stderr)
     rpc = Rpc(url=a.rpc, cache_dir=a.cache, rps=a.rps, fresh=a.fresh)
-    out = (lambda r, f: print(json.dumps(r, indent=1))) if a.json else (lambda r, f: f(r))
 
     if a.cmd == "back":
         out(trace.back(rpc, a.addr, labels, a.max_hops, a.busy, a.min_sol), show_back)
@@ -214,6 +290,13 @@ def main(argv=None):
             ap.error("sinks needs at least two wallets")
         since = datetime.datetime.fromisoformat(a.since.replace("Z", "+00:00")).timestamp() if a.since else None
         out(sinks.sinks(rpc, group, labels, a.n, a.min_sol, a.min_senders, a.depth, a.busy, since), show_sinks)
+    elif a.cmd == "relay":
+        try:
+            start = (relay.find(rpc, a.start, a.amount, a.tol, a.n) if a.amount is not None
+                     else relay.transfer(rpc, a.start))
+            out(relay.relay(rpc, start, labels, a.window, a.tol, a.max_hops, a.reads), show_relay)
+        except ValueError as e:
+            sys.exit(f"relay: {e}")
     elif a.cmd == "ledger":
         path = a.out or f"ledger_{a.addr}.jsonl"
         r = ledger.build(rpc, a.addr, path, a.cap,
@@ -224,6 +307,8 @@ def main(argv=None):
         out(s, lambda s: show_summary(s, a.top))
     elif a.cmd == "stables":
         out(ledger.stables(rpc, a.addr, ledger.read(a.ledger or f"ledger_{a.addr}.jsonl"), labels), show_stables)
+    if a.html and results:
+        write_report(a.html, results, labels, f"fundtrace {a.cmd}")
     print(f"rpc: {rpc.stats}", file=sys.stderr)
 
 

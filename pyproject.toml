@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solana-fund-tracer"
-version = "1.1.0"
-description = "Follow money on Solana: back to its source, forward to the exchange, and exchange deposit addresses. Read-only."
+version = "1.2.0"
+description = "Follow money on Solana: to its source, to the exchange, through relay chains; HTML case reports with Solscan links. Read-only."
 readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "Artem Vartanov"}]

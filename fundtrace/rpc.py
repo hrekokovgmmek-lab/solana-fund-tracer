@@ -17,7 +17,7 @@ except ImportError:                                    # Windows: the limit is p
     fcntl = None
 
 DEFAULT_URL = "https://api.mainnet-beta.solana.com"
-RETRYABLE_CODES = {429, -32005, -32603}
+RETRYABLE_CODES = {429, -32005, -32019, -32603}        # -32019: long-term storage busy, "try again"
 
 
 class RpcError(RuntimeError):
@@ -104,7 +104,7 @@ class Rpc:
                 continue
             err = j.get("error")
             if err:
-                if err.get("code") in RETRYABLE_CODES or "rate" in str(err).lower():
+                if err.get("code") in RETRYABLE_CODES or "rate" in str(err).lower() or "try again" in str(err).lower():
                     self.sleep(5 * (attempt + 1))
                     continue
                 raise RpcError(f"{method}: {err}")
@@ -119,10 +119,13 @@ class Rpc:
         return self.call("getTransaction",
                          [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1}]).get("result")
 
-    def sigs(self, addr, before=None, limit=1000):
+    def sigs(self, addr, before=None, limit=1000, until=None):
+        """Signatures of an address, newest first: older than `before`, newer than `until`."""
         opt = {"limit": limit}
         if before:
             opt["before"] = before
+        if until:
+            opt["until"] = until
         return self.call("getSignaturesForAddress", [addr, opt]).get("result") or []
 
     def all_sigs(self, addr, cap=20000):

@@ -3,6 +3,8 @@
 Every account, signature and amount here is made up. The story is the one the tracer is built for: money leaves an
 exchange, passes two hub wallets into a fresh wallet (one transfer hidden behind a memo and a one-off co-signer), the
 wallet trades a token, sends the proceeds on, and they come back to the exchange through a customer deposit address.
+Then four sellers send their profit to the same hub, and the hub pushes one non-round sum through three fresh wallets
+in nine seconds into another deposit address.
 """
 import json
 
@@ -18,8 +20,9 @@ FEE = 5000
 LABELS = {"EXCHANGE_HOT": {"cex": "Exchange", "name": "Exchange hot wallet 1"}}
 
 
-def _tx(sig, slot, signers, sol=None, tokens=(), ix=(), progs=(SYSTEM,)):
-    """A jsonParsed transaction. sol: {account: SOL change}; tokens: [(owner, mint, before, after)]."""
+def _tx(sig, slot, signers, sol=None, tokens=(), ix=(), progs=(SYSTEM,), t=None):
+    """A jsonParsed transaction. sol: {account: SOL change}; tokens: [(owner, mint, before, after)]; t: block time
+    (default: one minute per slot)."""
     sol = dict(sol or {})
     payer = signers[0]
     keys = list(signers)
@@ -37,7 +40,7 @@ def _tx(sig, slot, signers, sol=None, tokens=(), ix=(), progs=(SYSTEM,)):
                               "uiTokenAmount": {"uiAmount": x, "decimals": 6, "amount": str(int(x * 1e6))}}
     pre_tok = [bal(keys.index(ta), o, m, a) for ta, (o, m, a, b) in zip(token_accounts, tokens)]
     post_tok = [bal(keys.index(ta), o, m, b) for ta, (o, m, a, b) in zip(token_accounts, tokens)]
-    return {"slot": slot, "blockTime": T0 + slot * 60,
+    return {"slot": slot, "blockTime": T0 + slot * 60 if t is None else t,
             "transaction": {"signatures": [sig], "message": {
                 "accountKeys": [{"pubkey": k, "signer": k in signers, "writable": True} for k in keys],
                 "instructions": [{"programId": p} for p in progs]}},
@@ -85,31 +88,48 @@ def chain():
         _tx("sig22_mid_to_hub2", 222, ["MID_1"], {"MID_1": -59.89, "HUB_2": 59.89}),
         _tx("sig23_c_to_own_cold", 223, ["SELLER_C"], {"SELLER_C": -14.9, "C_COLD": 14.9}),
         _tx("sig24_d_to_hub2", 224, ["SELLER_D"], {"SELLER_D": -49.9, "HUB_2": 49.9}),
+        # The exit: one exact sum through three fresh wallets, three seconds apart. RELAY_2 pays someone else in
+        # between; the deposit address is swept into the exchange half an hour later.
+        _tx("sig25_hub2_to_relay1", 300, ["HUB_2"], {"HUB_2": -187.4416, "RELAY_1": 187.4416}, t=T0 + 18000),
+        _tx("sig26_relay1_to_relay2", 301, ["RELAY_1"], {"RELAY_1": -187.4416, "RELAY_2": 187.4416}, t=T0 + 18003),
+        _tx("sig27_relay2_pays_other", 302, ["RELAY_2"], {"RELAY_2": -1.25, "OTHER": 1.25}, t=T0 + 18005),
+        _tx("sig28_relay2_to_relay3", 303, ["RELAY_2"], {"RELAY_2": -187.4416, "RELAY_3": 187.4416}, t=T0 + 18006),
+        _tx("sig29_relay3_to_deposit", 304, ["RELAY_3"], {"RELAY_3": -187.4416, "DEPOSIT_D2": 187.4416}, t=T0 + 18009),
+        _tx("sig30_sweep_d2", 330, ["EXCHANGE_HOT", "DEPOSIT_D2"], {"DEPOSIT_D2": -187.4416, "EXCHANGE_HOT": 187.4416}),
     ]
 
 
 class Chain:
-    """Answers getTransaction and getSignaturesForAddress like an RPC node would, from `chain()`."""
+    """Answers getTransaction, getSignaturesForAddress and getBlock like an RPC node would, from `chain()`."""
 
     def __init__(self, txs=None):
-        self.txs = {t["transaction"]["signatures"][0]: t for t in (txs or chain())}
+        txs = txs or chain()
+        self.txs = {t["transaction"]["signatures"][0]: t for t in txs}
+        self.pos = {t["transaction"]["signatures"][0]: (t["slot"], i) for i, t in enumerate(txs)}   # ledger order
         self.calls = 0
 
     def transport(self, url, body):
         self.calls += 1
         req = json.loads(body)
         method, params = req["method"], req["params"]
+        ok = lambda result: json.dumps({"jsonrpc": "2.0", "id": 1, "result": result})
         if method == "getTransaction":
-            return json.dumps({"jsonrpc": "2.0", "id": 1, "result": self.txs.get(params[0])})
+            return ok(self.txs.get(params[0]))
         if method == "getSignaturesForAddress":
             addr, opt = params[0], params[1] if len(params) > 1 else {}
-            mine = sorted((t for t in self.txs.values()
+            mine = sorted((s for s, t in self.txs.items()
                            if addr in [k["pubkey"] for k in t["transaction"]["message"]["accountKeys"]]),
-                          key=lambda t: -t["slot"])
-            rows = [{"signature": t["transaction"]["signatures"][0], "slot": t["slot"], "blockTime": t["blockTime"],
-                     "err": None} for t in mine]
+                          key=self.pos.get, reverse=True)
+            # like a node: `before` and `until` may be any transaction, not only one of this address
             if opt.get("before"):
-                i = [r["signature"] for r in rows].index(opt["before"])
-                rows = rows[i + 1:]
-            return json.dumps({"jsonrpc": "2.0", "id": 1, "result": rows[:opt.get("limit", 1000)]})
+                mine = [s for s in mine if opt["before"] in self.pos and self.pos[s] < self.pos[opt["before"]]]
+            if opt.get("until") in self.pos:
+                mine = [s for s in mine if self.pos[s] > self.pos[opt["until"]]]
+            return ok([{"signature": s, "slot": self.txs[s]["slot"], "blockTime": self.txs[s]["blockTime"], "err": None}
+                       for s in mine[:opt.get("limit", 1000)]])
+        if method == "getBlock":
+            sigs = sorted((s for s, (slot, _) in self.pos.items() if slot == params[0]), key=self.pos.get)
+            if not sigs:
+                return json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": -32007, "message": "Slot was skipped"}})
+            return ok({"blockTime": self.txs[sigs[0]]["blockTime"], "signatures": sigs})
         return json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "method not found"}})

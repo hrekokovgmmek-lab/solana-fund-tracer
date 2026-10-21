@@ -1,2 +1,2 @@
-"""Follow money on Solana: from a wallet back to its source, forward to the exchange, and deposit addresses."""
-__version__ = "1.1.0"
+"""Follow money on Solana: back to its source, forward to the exchange, deposit addresses, relay chains, HTML reports."""
+__version__ = "1.2.0"
